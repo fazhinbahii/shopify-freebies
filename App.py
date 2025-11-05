@@ -13,7 +13,7 @@ import os
 
 app = FastAPI()
 
-SHOPIFY_ADMIN_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")
+SHOPIFY_ADMIN_TOKEN = os.getenv("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")
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
 # Mapping of main SKUs to freebie SKUs
