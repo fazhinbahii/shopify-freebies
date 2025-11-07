@@ -32,20 +32,26 @@ async def order_created(request: Request):
 
     print(f"🔔 New Order #{order_id} received")
 
-    # Collect all SKUs in the order
-    order_skus = [item.get("sku") for item in line_items if item.get("sku")]
-    print(f"🧾 Order SKUs: {order_skus}")
+    # Collect all SKUs in the order (clean whitespace + lowercase)
+    order_skus = [item.get("sku", "").strip() for item in line_items if item.get("sku")]
+    print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
+    print(f"🎯 Main Trigger SKUs (code list): {MAIN_SKUS}")
 
     freebies_to_add = []
 
-    # 👉 If any MAIN SKU is present, add all freebies
-    if any(sku in MAIN_SKUS for sku in order_skus):
-        print("⚡ Main SKU detected — adding all freebies.")
-        freebies_to_add = FREEBIE_SKUS.copy()
-    else:
-        print("✅ No main SKU found — no freebies will be added.")
+    # 🔍 Debug each SKU comparison
+    for sku in order_skus:
+        normalized_sku = sku.strip().upper()
+        print(f"🔎 Checking order SKU '{normalized_sku}' against triggers...")
+        if normalized_sku in [m.upper() for m in MAIN_SKUS]:
+            print(f"✅ Match found: {sku}")
+            freebies_to_add = FREEBIE_SKUS.copy()
+            break
+        else:
+            print(f"❌ No match for {sku}")
 
     if not freebies_to_add:
+        print("✅ No matching main SKU found — no freebies will be added.")
         return {"status": "no_freebies"}
 
     print(f"🎁 Adding freebies: {freebies_to_add}")
