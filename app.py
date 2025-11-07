@@ -6,7 +6,7 @@ import os
 app = FastAPI()
 
 # ✅ FIX: use getenv safely (don’t wrap token in os.getenv)
-SHOPIFY_ADMIN_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN", "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")
+SHOPIFY_ADMIN_TOKEN = "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"
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
 # --- Freebie Logic ---
