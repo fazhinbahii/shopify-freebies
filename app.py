@@ -5,7 +5,8 @@ import os
 
 app = FastAPI()
 
-SHOPIFY_ADMIN_TOKEN = os.getenv("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")
+# ✅ FIX: use getenv safely (don’t wrap token in os.getenv)
+SHOPIFY_ADMIN_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN", "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")
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
 # --- Freebie Logic ---
@@ -42,13 +43,21 @@ async def order_created(request: Request):
 
     print(f"🎁 Adding freebies: {freebies_to_add}")
 
-    # Fetch variant IDs for freebies from Shopify
+    # --- DEBUG ENHANCED SECTION ---
     variant_ids = []
     for sku in freebies_to_add:
+        url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={sku}"
+        print(f"🔍 Fetching variant for SKU: {sku}")
+        print(f"🌐 URL: {url}")
+
         resp = requests.get(
-            f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={sku}",
+            url,
             headers={"X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN}
         )
+
+        # ✅ Debug: print full API response for transparency
+        print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:500]}")
+
         if resp.status_code != 200:
             print(f"⚠️ Failed to fetch variant for {sku}: {resp.status_code}")
             continue
@@ -57,10 +66,11 @@ async def order_created(request: Request):
         if data.get("variants"):
             variant_id = data["variants"][0]["id"]
             variant_ids.append(variant_id)
+            print(f"✅ Found variant ID {variant_id} for SKU {sku}")
         else:
             print(f"⚠️ No variant found for SKU {sku}")
 
-    # Log freebies to the order as metafields (Shopify doesn't allow direct edits)
+    # --- Log freebies to the order as metafields (Shopify doesn't allow direct edits) ---
     for variant_id in variant_ids:
         add_metafield(order_id, variant_id)
 
@@ -90,4 +100,4 @@ def add_metafield(order_id, variant_id):
     if resp.status_code in (200, 201):
         print(f"📝 Logged freebie variant {variant_id} to order {order_id}")
     else:
-        print(f"⚠️ Failed to log freebie {variant_id}: {resp.status_code}")
+        print(f"⚠️ Failed to log freebie {variant_id}: {resp.status_code} — {resp.text[:200]}")
