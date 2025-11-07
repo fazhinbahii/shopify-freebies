@@ -5,14 +5,20 @@ import os
 
 app = FastAPI()
 
-# ✅ FIX: use getenv safely (don’t wrap token in os.getenv)
+# ✅ Use token directly (not wrapped in os.getenv)
 SHOPIFY_ADMIN_TOKEN = "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"
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
-# --- Freebie Logic ---
-# If ANY of these SKUs are present in an order,
-# add ALL of these freebies (even if some are already in the order)
-FREEBIE_TRIGGER_SKUS = [
+# --- 🎯 Main SKUs (Trigger Products) ---
+# If any of these SKUs are present in an order, all freebies will be added.
+MAIN_SKUS = [
+    "B-BP-SFI-12PK-V2",
+    "B-BP-SFI-24PK-V1-MF",
+    "B-BP-SFI-36PK-V1-MF"
+]
+
+# --- 🎁 Freebie SKUs (Items to Add Automatically) ---
+FREEBIE_SKUS = [
     "FREE-B-BP-SPC-2PK-V1",
     "FREE-B-BP-APPLICAT-XX-V1",
     "FREE-B-BP-PPE-V1"
@@ -32,18 +38,19 @@ async def order_created(request: Request):
 
     freebies_to_add = []
 
-    # 👉 If any trigger SKU is in the order, add all freebies (always include all three)
-    if any(sku in FREEBIE_TRIGGER_SKUS for sku in order_skus):
-        print("⚡ Trigger SKU detected — adding all freebies.")
-        freebies_to_add = FREEBIE_TRIGGER_SKUS.copy()
+    # 👉 If any MAIN SKU is present, add all freebies
+    if any(sku in MAIN_SKUS for sku in order_skus):
+        print("⚡ Main SKU detected — adding all freebies.")
+        freebies_to_add = FREEBIE_SKUS.copy()
+    else:
+        print("✅ No main SKU found — no freebies will be added.")
 
     if not freebies_to_add:
-        print("✅ No freebies required for this order.")
         return {"status": "no_freebies"}
 
     print(f"🎁 Adding freebies: {freebies_to_add}")
 
-    # --- DEBUG ENHANCED SECTION ---
+    # --- DEBUG: Fetch Shopify Variant IDs for each freebie SKU ---
     variant_ids = []
     for sku in freebies_to_add:
         url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={sku}"
@@ -55,7 +62,7 @@ async def order_created(request: Request):
             headers={"X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN}
         )
 
-        # ✅ Debug: print full API response for transparency
+        # ✅ Debug output (limit long responses)
         print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:500]}")
 
         if resp.status_code != 200:
@@ -70,7 +77,7 @@ async def order_created(request: Request):
         else:
             print(f"⚠️ No variant found for SKU {sku}")
 
-    # --- Log freebies to the order as metafields (Shopify doesn't allow direct edits) ---
+    # --- Log freebies to order metafields (Shopify doesn't allow direct edits) ---
     for variant_id in variant_ids:
         add_metafield(order_id, variant_id)
 
@@ -100,4 +107,4 @@ def add_metafield(order_id, variant_id):
     if resp.status_code in (200, 201):
         print(f"📝 Logged freebie variant {variant_id} to order {order_id}")
     else:
-        print(f"⚠️ Failed to log freebie {variant_id}: {resp.status_code} — {resp.text[:200]}")
+        print(f"⚠️ Failed to log freebie {variant_id}: {resp.status_code}")
