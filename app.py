@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from fastapi import FastAPI, Request
 import requests
-import os
 
 app = FastAPI()
 
@@ -10,7 +9,6 @@ SHOPIFY_ADMIN_TOKEN = "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"
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
 # --- 🎯 Main SKUs (Trigger Products) ---
-# If any of these SKUs are present in an order, all freebies will be added.
 MAIN_SKUS = [
     "B-BP-SFI-12PK-V2",
     "B-BP-SFI-24PK-V1-MF",
@@ -24,6 +22,7 @@ FREEBIE_SKUS = [
     "FREE-B-BP-PPE-V1"
 ]
 
+
 @app.post("/webhook/orders/create")
 async def order_created(request: Request):
     payload = await request.json()
@@ -32,18 +31,17 @@ async def order_created(request: Request):
 
     print(f"🔔 New Order #{order_id} received")
 
-    # Collect all SKUs in the order (clean whitespace + lowercase)
-    order_skus = [item.get("sku", "").strip() for item in line_items if item.get("sku")]
+    # Collect all SKUs (clean + uppercase)
+    order_skus = [item.get("sku", "").strip().upper() for item in line_items if item.get("sku")]
     print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
-    print(f"🎯 Main Trigger SKUs (code list): {MAIN_SKUS}")
+    print(f"🎯 Main Trigger SKUs (code list): {[s.upper() for s in MAIN_SKUS]}")
 
     freebies_to_add = []
 
-    # 🔍 Debug each SKU comparison
+    # 🔍 Debug SKU comparison
     for sku in order_skus:
-        normalized_sku = sku.strip().upper()
-        print(f"🔎 Checking order SKU '{normalized_sku}' against triggers...")
-        if normalized_sku in [m.upper() for m in MAIN_SKUS]:
+        print(f"🔎 Checking order SKU '{sku}' against triggers...")
+        if sku in [m.upper() for m in MAIN_SKUS]:
             print(f"✅ Match found: {sku}")
             freebies_to_add = FREEBIE_SKUS.copy()
             break
@@ -56,11 +54,11 @@ async def order_created(request: Request):
 
     print(f"🎁 Adding freebies: {freebies_to_add}")
 
-    # --- DEBUG: Fetch Shopify Variant IDs for each freebie SKU ---
+    # --- DEBUG: Fetch Shopify Variant IDs for each freebie SKU (exact match only) ---
     variant_ids = []
-    for sku in freebies_to_add:
-        url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={sku}"
-        print(f"🔍 Fetching variant for SKU: {sku}")
+    for freebie_sku in freebies_to_add:
+        url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={freebie_sku}"
+        print(f"🔍 Fetching variant for SKU: {freebie_sku}")
         print(f"🌐 URL: {url}")
 
         resp = requests.get(
@@ -68,22 +66,24 @@ async def order_created(request: Request):
             headers={"X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN}
         )
 
-        # ✅ Debug output (limit long responses)
-        print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:500]}")
+        print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:400]}...")
 
         if resp.status_code != 200:
-            print(f"⚠️ Failed to fetch variant for {sku}: {resp.status_code}")
+            print(f"⚠️ Failed to fetch variant for {freebie_sku}: {resp.status_code}")
             continue
 
         data = resp.json()
-        if data.get("variants"):
-            variant_id = data["variants"][0]["id"]
-            variant_ids.append(variant_id)
-            print(f"✅ Found variant ID {variant_id} for SKU {sku}")
-        else:
-            print(f"⚠️ No variant found for SKU {sku}")
+        # ✅ Exact SKU match logic to avoid incorrect variant IDs
+        variant = next((v for v in data.get("variants", []) if v.get("sku") == freebie_sku), None)
 
-    # --- Log freebies to order metafields (Shopify doesn't allow direct edits) ---
+        if variant:
+            variant_id = variant["id"]
+            variant_ids.append(variant_id)
+            print(f"✅ Found exact variant ID {variant_id} for SKU {freebie_sku}")
+        else:
+            print(f"⚠️ No exact variant found for SKU {freebie_sku}")
+
+    # --- Log freebies to order metafields ---
     for variant_id in variant_ids:
         add_metafield(order_id, variant_id)
 
