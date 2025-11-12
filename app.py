@@ -23,10 +23,8 @@ FREEBIE_SKUS = [
 ]
 
 
-# === Helper Functions ===
-
 def fetch_variant_id_by_sku(sku: str):
-    """Fetch variant ID for a SKU using Shopify API."""
+    """Fetch variant ID for a given SKU using Shopify API."""
     print(f"🔍 Fetching variant for SKU: {sku}")
     headers = {
         "Content-Type": "application/json",
@@ -34,7 +32,7 @@ def fetch_variant_id_by_sku(sku: str):
     }
 
     resp = requests.get(
-        f"https://{SHOPIFY_STORE_URL}/admin/api/2023-07/products.json?sku={sku}",
+        f"https://{SHOPIFY_STORE_URL}/admin/api/2025-01/variants.json?sku={sku}",
         headers=headers,
     )
 
@@ -44,19 +42,17 @@ def fetch_variant_id_by_sku(sku: str):
         print(f"❌ Shopify API error {resp.status_code}: {resp.text}")
         return None
 
-    products = resp.json().get("products", [])
-    for p in products:
-        for v in p.get("variants", []):
-            variant_sku = (v.get("sku") or "").strip().upper()
-            if variant_sku == sku.upper():
-                print(f"✅ Found variant {v['id']} for SKU {sku}")
-                return v["id"]
+    variants = resp.json().get("variants", [])
+    for v in variants:
+        variant_sku = (v.get("sku") or "").strip().upper()
+        if variant_sku == sku.upper():
+            print(f"✅ Found variant ID {v['id']} for SKU {sku}")
+            return v["id"]
 
     print(f"⚠️ No variant found for SKU {sku}")
     return None
 
 
-# === Webhook Endpoint ===
 @app.post("/webhook/orders/create")
 async def order_created(request: Request):
     """Triggered when a new order is created in Shopify."""
@@ -71,60 +67,68 @@ async def order_created(request: Request):
         print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
         print(f"🎯 Main Trigger SKUs (code list): {TRIGGER_SKUS}")
 
-        # Check if order contains any main SKU
+        # ✅ Detect main SKU
         trigger_found = any(sku in TRIGGER_SKUS for sku in order_skus)
         print(f"✅ Trigger present? {trigger_found}")
 
         if not trigger_found:
-            print("🚫 No trigger SKU found. No freebies added.")
+            print("🚫 No trigger SKU found — skipping freebies.")
             return {"status": "ignored"}
 
-        # Identify existing freebies already in the order
+        # ✅ Find existing freebies
         existing_freebies = [sku for sku in order_skus if sku in FREEBIE_SKUS]
         print(f"🎁 Existing freebies in order: {existing_freebies}")
 
-        # Determine which freebies are missing
+        # ✅ Detect missing freebies
         missing_freebies = [sku for sku in FREEBIE_SKUS if sku not in existing_freebies]
         print(f"🆕 Missing freebies to add: {missing_freebies}")
 
         if not missing_freebies:
-            print("✅ All freebies already present. Nothing to add.")
+            print("✅ All freebies already present.")
             return {"status": "freebies_already_present"}
 
-        # Prepare freebies to add
-        add_freebie_items = []
+        # ✅ Get variant IDs for missing freebies
+        missing_variant_ids = []
         for sku in missing_freebies:
-            variant_id = fetch_variant_id_by_sku(sku)
-            if variant_id:
-                add_freebie_items.append({"variant_id": variant_id, "quantity": 1})
-            else:
-                print(f"⚠️ Variant not found for {sku}, skipping.")
+            vid = fetch_variant_id_by_sku(sku)
+            if vid:
+                missing_variant_ids.append(vid)
 
-        if not add_freebie_items:
-            print("⚠️ No valid freebies found to add.")
-            return {"status": "no_valid_freebies"}
+        print(f"🧩 Variant IDs to add (for log): {missing_variant_ids}")
 
-        # === Update order to add freebies ===
-        print(f"🛒 Adding freebies to Order #{order_id}")
+        # ✅ Instead of modifying the order (Shopify doesn’t allow),
+        # we log them via order metafields
         headers = {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
         }
 
-        data = {"order": {"id": order_id, "line_items": add_freebie_items}}
+        metafield_data = {
+            "metafield": {
+                "namespace": "freebies",
+                "key": "missing_freebies",
+                "value": json.dumps(missing_freebies),
+                "type": "json"
+            }
+        }
 
-        update_resp = requests.put(
-            f"https://{SHOPIFY_STORE_URL}/admin/api/2023-07/orders/{order_id}.json",
+        meta_resp = requests.post(
+            f"https://{SHOPIFY_STORE_URL}/admin/api/2025-01/orders/{order_id}/metafields.json",
             headers=headers,
-            data=json.dumps(data),
+            data=json.dumps(metafield_data),
         )
 
-        if update_resp.status_code == 200:
-            print(f"✅ Freebies successfully added to order #{order_id}")
-            return {"status": "success"}
+        print(f"📝 Shopify metafield response ({meta_resp.status_code}): {meta_resp.text[:300]}")
+
+        if meta_resp.status_code in (200, 201):
+            print("✅ Missing freebies logged successfully.")
+            return {
+                "status": "logged_missing_freebies",
+                "missing_freebies": missing_freebies,
+            }
         else:
-            print(f"❌ Failed to update order: {update_resp.text}")
-            return {"status": "failed", "error": update_resp.text}
+            print("⚠️ Could not log metafield, but no crash.")
+            return {"status": "freebies_detected", "missing_freebies": missing_freebies}
 
     except Exception as e:
         print(f"💥 Error in webhook: {e}")
