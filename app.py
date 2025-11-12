@@ -1,115 +1,123 @@
-# -*- coding: utf-8 -*-
 from fastapi import FastAPI, Request
 import requests
+import json
+import os
 
 app = FastAPI()
 
-# --- 🔐 Shopify Configuration ---
+# === Shopify Configuration ===
 SHOPIFY_ADMIN_TOKEN = "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"
 SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
 
-# --- 🎯 Main SKUs (Trigger Products) ---
-MAIN_SKUS = [
+# === SKU Lists ===
+TRIGGER_SKUS = [
     "B-BP-SFI-12PK-V2",
     "B-BP-SFI-24PK-V1-MF",
-    "B-BP-SFI-36PK-V1-MF"
+    "B-BP-SFI-36PK-V1-MF",
 ]
 
-# --- 🎁 Freebie SKUs (Items to Add Automatically) ---
 FREEBIE_SKUS = [
     "FREE-B-BP-SPC-2PK-V1",
     "FREE-B-BP-APPLICAT-XX-V1",
-    "FREE-B-BP-PPE-V1"
+    "FREE-B-BP-PPE-V1",
 ]
 
 
+# === Helper Functions ===
+
+def fetch_variant_id_by_sku(sku: str):
+    """Fetch variant ID for a SKU using Shopify API."""
+    print(f"🔍 Fetching variant for SKU: {sku}")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+    }
+    resp = requests.get(
+        f"https://{SHOPIFY_STORE_URL}/admin/api/2023-07/products.json?sku={sku}",
+        headers=headers,
+    )
+
+    if resp.status_code != 200:
+        print(f"❌ Shopify API error {resp.status_code}: {resp.text}")
+        return None
+
+    products = resp.json().get("products", [])
+    for p in products:
+        for v in p.get("variants", []):
+            if (v.get("sku") or "").strip().upper() == sku.upper():
+                print(f"✅ Found variant {v['id']} for SKU {sku}")
+                return v["id"]
+
+    print(f"⚠️ No variant found for SKU {sku}")
+    return None
+
+
+# === Webhook Endpoint ===
 @app.post("/webhook/orders/create")
 async def order_created(request: Request):
-    payload = await request.json()
-    order_id = payload.get("id")
-    line_items = payload.get("line_items", [])
+    """Triggered when a new order is created in Shopify."""
+    try:
+        payload = await request.json()
+        order_id = payload.get("id")
+        line_items = payload.get("line_items", [])
 
-    print(f"🔔 New Order #{order_id} received")
+        print(f"\n🔔 New Order #{order_id} received")
+        order_skus = [item.get("sku", "").strip().upper() for item in line_items]
+        print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
+        print(f"🎯 Main Trigger SKUs (code list): {TRIGGER_SKUS}")
 
-    # ✅ Collect SKUs from order
-    order_skus = [item.get("sku", "").strip().upper() for item in line_items if item.get("sku")]
-    print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
+        # Check if order contains any main SKU
+        trigger_found = any(sku in TRIGGER_SKUS for sku in order_skus)
+        print(f"✅ Trigger present? {trigger_found}")
 
-    # --- Step 1: Check for main SKU trigger ---
-    main_sku_found = any(sku in [m.upper() for m in MAIN_SKUS] for sku in order_skus)
-    print(f"🎯 Main Trigger SKUs (code list): {MAIN_SKUS}")
-    print(f"✅ Trigger present? {main_sku_found}")
+        if not trigger_found:
+            print("🚫 No trigger SKU found. No freebies added.")
+            return {"status": "ignored"}
 
-    if not main_sku_found:
-        print("✅ No main SKU in order — skipping freebies.")
-        return {"status": "no_freebies"}
+        # Identify existing freebies already in the order
+        existing_freebies = [sku for sku in order_skus if sku in FREEBIE_SKUS]
+        print(f"🎁 Existing freebies in order: {existing_freebies}")
 
-    # --- Step 2: Check which freebies are already present ---
-    existing_freebies = [sku for sku in FREEBIE_SKUS if sku.upper() in order_skus]
-    missing_freebies = [sku for sku in FREEBIE_SKUS if sku.upper() not in order_skus]
+        # Determine which freebies are missing
+        missing_freebies = [sku for sku in FREEBIE_SKUS if sku not in existing_freebies]
+        print(f"🆕 Missing freebies to add: {missing_freebies}")
 
-    print(f"🎁 Existing freebies in order: {existing_freebies}")
-    print(f"🆕 Missing freebies to add: {missing_freebies}")
+        if not missing_freebies:
+            print("✅ All freebies already present. Nothing to add.")
+            return {"status": "freebies_already_present"}
 
-    if not missing_freebies:
-        print("✅ All freebies already in order — nothing to add.")
-        return {"status": "all_freebies_present"}
+        # Prepare freebies to add
+        add_freebie_items = []
+        for sku in missing_freebies:
+            variant_id = fetch_variant_id_by_sku(sku)
+            if variant_id:
+                add_freebie_items.append({"variant_id": variant_id, "quantity": 1})
 
-    # --- Step 3: Fetch variant IDs for missing freebies ---
-    variant_ids = []
-    for sku in missing_freebies:
-        url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/variants.json?sku={sku}"
-        print(f"🔍 Fetching variant for SKU: {sku}")
-        resp = requests.get(url, headers={"X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN})
-        print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:300]}")
+        if not add_freebie_items:
+            print("⚠️ No valid freebies found to add.")
+            return {"status": "no_valid_freebies"}
 
-        if resp.status_code != 200:
-            print(f"⚠️ Failed to fetch variant for {sku}")
-            continue
-
-        data = resp.json()
-        # Safely filter for the exact SKU match
-        matching_variants = [
-            v for v in data.get("variants", [])
-            if v.get("sku", "").strip().upper() == sku.upper()
-        ]
-
-        if matching_variants:
-            variant_id = matching_variants[0]["id"]
-            variant_ids.append(variant_id)
-            print(f"✅ Found variant ID {variant_id} for SKU {sku}")
-        else:
-            print(f"⚠️ No variant found for SKU {sku}")
-
-    # --- Step 4: Log freebies to order metafields ---
-    for variant_id in variant_ids:
-        add_metafield(order_id, variant_id)
-
-    print(f"✅ Added {len(variant_ids)} missing freebies.")
-    return {
-        "status": "freebies_added",
-        "added_count": len(variant_ids),
-        "added_skus": missing_freebies,
-        "already_present": existing_freebies
-    }
-
-
-def add_metafield(order_id, variant_id):
-    """Adds a metafield to record that a freebie was added."""
-    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders/{order_id}/metafields.json"
-    resp = requests.post(
-        url,
-        headers={"X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN},
-        json={
-            "metafield": {
-                "namespace": "freebie",
-                "key": f"variant_{variant_id}",
-                "value": "added",
-                "type": "single_line_text_field"
-            }
+        # === Create Draft Order or Add to Existing Order ===
+        print(f"🛒 Adding freebies to Order #{order_id}")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
         }
-    )
-    if resp.status_code in (200, 201):
-        print(f"📝 Logged freebie variant {variant_id} to order {order_id}")
-    else:
-        print(f"⚠️ Failed to log freebie {variant_id}: {resp.status_code}")
+        data = {"order": {"id": order_id, "line_items": add_freebie_items}}
+
+        update_resp = requests.put(
+            f"https://{SHOPIFY_STORE_URL}/admin/api/2023-07/orders/{order_id}.json",
+            headers=headers,
+            data=json.dumps(data),
+        )
+
+        if update_resp.status_code == 200:
+            print(f"✅ Freebies successfully added to order #{order_id}")
+            return {"status": "success"}
+        else:
+            print(f"❌ Failed to update order: {update_resp.text}")
+            return {"status": "failed", "error": update_resp.text}
+
+    except Exception as e:
+        print(f"💥 Error in webhook: {e}")
+        return {"status": "error", "message": str(e)}
