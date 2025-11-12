@@ -6,8 +6,8 @@ import os
 app = FastAPI()
 
 # === Shopify Configuration ===
-SHOPIFY_ADMIN_TOKEN = "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"
-SHOPIFY_DOMAIN = "fullstopbeest.myshopify.com"
+SHOPIFY_STORE_URL = os.getenv("SHOPIFY_STORE_URL", "fullstopbeest.myshopify.com")
+SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "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")
 
 # === SKU Lists ===
 TRIGGER_SKUS = [
@@ -32,10 +32,13 @@ def fetch_variant_id_by_sku(sku: str):
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
     }
+
     resp = requests.get(
         f"https://{SHOPIFY_STORE_URL}/admin/api/2023-07/products.json?sku={sku}",
         headers=headers,
     )
+
+    print(f"🧾 Shopify API Response ({resp.status_code}): {resp.text[:400]}")
 
     if resp.status_code != 200:
         print(f"❌ Shopify API error {resp.status_code}: {resp.text}")
@@ -44,7 +47,8 @@ def fetch_variant_id_by_sku(sku: str):
     products = resp.json().get("products", [])
     for p in products:
         for v in p.get("variants", []):
-            if (v.get("sku") or "").strip().upper() == sku.upper():
+            variant_sku = (v.get("sku") or "").strip().upper()
+            if variant_sku == sku.upper():
                 print(f"✅ Found variant {v['id']} for SKU {sku}")
                 return v["id"]
 
@@ -62,7 +66,8 @@ async def order_created(request: Request):
         line_items = payload.get("line_items", [])
 
         print(f"\n🔔 New Order #{order_id} received")
-        order_skus = [item.get("sku", "").strip().upper() for item in line_items]
+
+        order_skus = [(item.get("sku") or "").strip().upper() for item in line_items]
         print(f"🧾 Order SKUs (from Shopify payload): {order_skus}")
         print(f"🎯 Main Trigger SKUs (code list): {TRIGGER_SKUS}")
 
@@ -92,17 +97,20 @@ async def order_created(request: Request):
             variant_id = fetch_variant_id_by_sku(sku)
             if variant_id:
                 add_freebie_items.append({"variant_id": variant_id, "quantity": 1})
+            else:
+                print(f"⚠️ Variant not found for {sku}, skipping.")
 
         if not add_freebie_items:
             print("⚠️ No valid freebies found to add.")
             return {"status": "no_valid_freebies"}
 
-        # === Create Draft Order or Add to Existing Order ===
+        # === Update order to add freebies ===
         print(f"🛒 Adding freebies to Order #{order_id}")
         headers = {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
         }
+
         data = {"order": {"id": order_id, "line_items": add_freebie_items}}
 
         update_resp = requests.put(
